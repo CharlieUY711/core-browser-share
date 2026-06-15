@@ -1,10 +1,14 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("coreAgent", {
-  start: (sessionCode) => ipcRenderer.invoke("agent:start", sessionCode),
-  stop: () => ipcRenderer.invoke("agent:stop"),
-  status: () => ipcRenderer.invoke("agent:status"),
-  onReady: (cb) => ipcRenderer.on("agent:ready", cb),
-  onViewerConnected: (cb) => ipcRenderer.on("agent:viewer-connected", cb),
-  onStopped: (cb) => ipcRenderer.on("agent:stopped", cb),
+contextBridge.exposeInMainWorld("coreDesktop", {
+  // Listar pantallas/ventanas disponibles
+  getSources: () => ipcRenderer.invoke("get-sources"),
+  // Agente de control
+  startAgent: (sessionCode) => ipcRenderer.invoke("agent:start", sessionCode),
+  stopAgent: () => ipcRenderer.invoke("agent:stop"),
+  // Eventos del agente
+  onAgentReady: (cb) => ipcRenderer.on("agent:ready", (_e, data) => cb(data)),
+  onAgentStopped: (cb) => ipcRenderer.on("agent:stopped", cb),
+  // Detectar si estamos en Electron
+  isElectron: true,
 });

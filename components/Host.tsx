@@ -8,7 +8,7 @@ type ControlStatus = "idle" | "active";
 
 interface HostProps {
   sessionCode: string;
-  onExit: () => void;
+  onExit?: () => void;
 }
 
 export function Host({ sessionCode, onExit }: HostProps) {
@@ -104,3 +104,4 @@ export function Host({ sessionCode, onExit }: HostProps) {
     </div>
   );
 }
+

@@ -164,7 +164,7 @@ export function Host({ sessionCode, onExit }: HostProps) {
 // Control remoto ejecutado dentro del iframe del host
 function startRemoteControlListenerInIframe(
   sessionCode: string,
-  iframeRef: React.React.MutableRefObject<HTMLIFrameElement | null>
+  iframeRef: React.MutableRefObject<HTMLIFrameElement | null>
 ) {
   const { supabase } = require("@/lib/supabase");
   const channel = supabase.channel(`control:${sessionCode}`);
@@ -232,5 +232,6 @@ function startRemoteControlListenerInIframe(
   channel.subscribe();
   return () => supabase.removeChannel(channel);
 }
+
 
 

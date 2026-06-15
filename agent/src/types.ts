@@ -1,5 +1,3 @@
-// Control remoto — protocolo de eventos entre Viewer y Host Agent
-
 export type ControlEventType =
   | "mousemove"
   | "mousedown"
@@ -11,11 +9,10 @@ export type ControlEventType =
 
 export interface ControlEvent {
   type: ControlEventType;
-  // Coordenadas normalizadas 0-1 (relativas al tamaño de la ventana del viewer)
   x?: number;
   y?: number;
   button?: "left" | "right" | "middle";
   key?: string;
-  delta?: number; // scroll
+  delta?: number;
   session_code: string;
 }

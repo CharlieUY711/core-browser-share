@@ -1,4 +1,5 @@
 "use client";
+import React from "react";
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
@@ -163,7 +164,7 @@ export function Host({ sessionCode, onExit }: HostProps) {
 // Control remoto ejecutado dentro del iframe del host
 function startRemoteControlListenerInIframe(
   sessionCode: string,
-  iframeRef: React.RefObject<HTMLIFrameElement>
+  iframeRef: React.React.MutableRefObject<HTMLIFrameElement | null>
 ) {
   const { supabase } = require("@/lib/supabase");
   const channel = supabase.channel(`control:${sessionCode}`);
@@ -231,3 +232,5 @@ function startRemoteControlListenerInIframe(
   channel.subscribe();
   return () => supabase.removeChannel(channel);
 }
+
+

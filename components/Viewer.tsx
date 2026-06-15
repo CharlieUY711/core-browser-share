@@ -7,60 +7,91 @@ import type { ControlEvent } from "@/lib/control";
 interface ViewerProps { sessionCode: string; }
 
 export function Viewer({ sessionCode }: ViewerProps) {
-  const [url, setUrl] = useState<string | null>(null);
+  const [status, setStatus] = useState<"waiting" | "connecting" | "connected" | "error">("waiting");
   const [controlEnabled, setControlEnabled] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const controlChRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   useEffect(() => {
-    // Un solo canal para todo: control + url:change + presencia
-    const ch = supabase.channel(`session:${sessionCode}`, {
-      config: { presence: { key: "viewer" } }
-    });
-    channelRef.current = ch;
+    const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-    ch.on("presence", { event: "sync" }, () => {
-      const state = ch.presenceState() as any;
-      const entries = Object.values(state).flat() as any[];
-      const host = entries.find((p: any) => p.role === "host");
-      if (host?.url) setUrl(host.url);
-    });
-
-    ch.on("broadcast", { event: "url:change" }, ({ payload }) => {
-      if (payload?.url) setUrl(payload.url);
-    });
-
-    ch.subscribe(async (status) => {
-      if (status === "SUBSCRIBED") {
-        await ch.track({ role: "viewer", joined_at: new Date().toISOString() });
-      }
-    });
-
-    // Canal separado solo para eventos de control
+    // Canal de signaling
+    const signalingCh = supabase.channel(`signaling:${sessionCode}`);
+    // Canal de control
     const controlCh = supabase.channel(`control:${sessionCode}`);
+    controlChRef.current = controlCh;
     controlCh.subscribe();
-    // Guardar referencia al canal de control para enviar eventos
-    const originalRef = channelRef;
+
+    signalingCh
+      .on("broadcast", { event: "signal" }, async ({ payload }: any) => {
+        if (payload.from === "viewer") return;
+
+        if (payload.type === "offer") {
+          setStatus("connecting");
+          const pc = new RTCPeerConnection(ICE);
+          pcRef.current = pc;
+
+          pc.ontrack = ({ streams }) => {
+            if (streams[0] && videoRef.current) {
+              videoRef.current.srcObject = streams[0];
+              setStatus("connected");
+            }
+          };
+
+          pc.onicecandidate = async ({ candidate }) => {
+            if (candidate) {
+              await signalingCh.send({
+                type: "broadcast",
+                event: "signal",
+                payload: { type: "candidate", payload: candidate.toJSON(), from: "viewer" }
+              });
+            }
+          };
+
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.payload));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          await signalingCh.send({
+            type: "broadcast",
+            event: "signal",
+            payload: { type: "answer", payload: answer, from: "viewer" }
+          });
+        }
+
+        if (payload.type === "candidate" && pcRef.current) {
+          try { await pcRef.current.addIceCandidate(new RTCIceCandidate(payload.payload)); } catch {}
+        }
+      })
+      .subscribe(async (status: string) => {
+        if (status === "SUBSCRIBED") {
+          // Avisar al agente que el viewer está listo
+          await signalingCh.send({
+            type: "broadcast",
+            event: "signal",
+            payload: { type: "ready", from: "viewer" }
+          });
+        }
+      });
+
+    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
 
     return () => {
-      supabase.removeChannel(ch);
+      pcRef.current?.close();
+      supabase.removeChannel(signalingCh);
       supabase.removeChannel(controlCh);
+      document.removeEventListener("fullscreenchange", handler);
     };
   }, [sessionCode]);
 
-  useEffect(() => {
-    const handler = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", handler);
-    return () => document.removeEventListener("fullscreenchange", handler);
-  }, []);
-
   const sendEvent = (event: Omit<ControlEvent, "session_code">) => {
-    // Enviar al canal control:
-    supabase.channel(`control:${sessionCode}`).send({
+    controlChRef.current?.send({
       type: "broadcast",
       event: "control",
-      payload: { ...event, session_code: sessionCode } satisfies ControlEvent,
+      payload: { ...event, session_code: sessionCode },
     });
   };
 
@@ -101,13 +132,6 @@ export function Viewer({ sessionCode }: ViewerProps) {
     sendEvent({ type: "scroll", delta: e.deltaY });
   };
 
-  if (!url) return (
-    <div className="card flex flex-col items-center gap-3 py-16 text-center">
-      <div className="h-6 w-6 animate-spin rounded-full border-2 border-core-muted border-t-core-accent" />
-      <p className="text-sm text-core-text-muted">Esperando al host...</p>
-    </div>
-  );
-
   return (
     <div
       ref={containerRef}
@@ -129,12 +153,14 @@ export function Viewer({ sessionCode }: ViewerProps) {
           <svg className="h-3 w-3 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
-          <span className="text-xs text-core-text-muted font-mono truncate">{url}</span>
+          <span className="text-xs text-core-text-muted font-mono">
+            {status === "connected" ? "Pantalla remota en vivo" : status === "connecting" ? "Conectando..." : "Esperando agente..."}
+          </span>
         </div>
 
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1.5 rounded-full bg-red-500/20 border border-red-500/30 px-2 py-0.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse" />
+            <span className={`h-1.5 w-1.5 rounded-full bg-red-500 ${status === "connected" ? "animate-pulse" : "opacity-40"}`} />
             <span className="text-xs text-red-400 font-medium">EN VIVO</span>
           </div>
 
@@ -143,7 +169,8 @@ export function Viewer({ sessionCode }: ViewerProps) {
               setControlEnabled(!controlEnabled);
               if (!controlEnabled) containerRef.current?.focus();
             }}
-            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-all ${
+            disabled={status !== "connected"}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
               controlEnabled
                 ? "bg-core-accent text-white"
                 : "bg-white/10 text-core-text-muted hover:bg-white/20 hover:text-white"
@@ -167,21 +194,34 @@ export function Viewer({ sessionCode }: ViewerProps) {
         </div>
       </div>
 
+      {/* Video stream */}
       <div
-        className={`flex-1 relative overflow-hidden ${controlEnabled ? "cursor-crosshair" : "cursor-default"}`}
+        className={`flex-1 relative bg-black overflow-hidden ${controlEnabled ? "cursor-none" : "cursor-default"}`}
         onMouseMove={handleMouseMove}
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
         onWheel={handleWheel}
         onContextMenu={(e) => controlEnabled && e.preventDefault()}
       >
-        <iframe
-          src={url}
-          className="w-full h-full border-0 pointer-events-none"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className="w-full h-full object-contain"
         />
-        {controlEnabled && <div className="absolute inset-0 bg-transparent" />}
-        {controlEnabled && (
+
+        {status !== "connected" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-core-muted border-t-core-accent" />
+            <p className="text-sm text-core-text-muted">
+              {status === "connecting" ? "Conectando WebRTC..." : "Esperando al agente desktop..."}
+            </p>
+            <p className="text-xs text-core-text-muted opacity-60">Asegurate que el agente esté corriendo</p>
+          </div>
+        )}
+
+        {controlEnabled && status === "connected" && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-core-accent/90 px-3 py-1 text-xs font-medium text-white backdrop-blur-sm pointer-events-none">
             <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
             Controlando pantalla remota

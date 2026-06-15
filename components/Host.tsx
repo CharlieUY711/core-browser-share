@@ -205,8 +205,7 @@ function startRemoteControlListenerInIframe(
       case "keydown": {
         const el = doc.activeElement ?? doc.body;
         if (payload.key === "Backspace") {
-          if (el instanceof iframe.contentWindow.HTMLInputElement ||
-              el instanceof iframe.contentWindow.HTMLTextAreaElement) {
+          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             const start = el.selectionStart ?? el.value.length;
             if (start > 0) {
               el.value = el.value.slice(0, start - 1) + el.value.slice(start);
@@ -215,8 +214,7 @@ function startRemoteControlListenerInIframe(
             }
           }
         } else if (payload.key?.length === 1) {
-          if (el instanceof iframe.contentWindow.HTMLInputElement ||
-              el instanceof iframe.contentWindow.HTMLTextAreaElement) {
+          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             const start = el.selectionStart ?? el.value.length;
             el.value = el.value.slice(0, start) + payload.key + el.value.slice(start);
             el.selectionStart = el.selectionEnd = start + 1;
@@ -232,6 +230,7 @@ function startRemoteControlListenerInIframe(
   channel.subscribe();
   return () => supabase.removeChannel(channel);
 }
+
 
 
 

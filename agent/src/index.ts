@@ -1,13 +1,11 @@
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 import { mouse, keyboard, Point, Key, Button, screen } from "@nut-tree-fork/nut-js";
-import screenshot from "screenshot-desktop";
 import type { ControlEvent } from "./types";
 
-// @roamhq/wrtc para WebRTC en Node
 const wrtc = require("@roamhq/wrtc");
 const { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, nonstandard } = wrtc;
-const { RTCVideoSource, RTCAudioSource } = nonstandard;
+const { RTCVideoSource } = nonstandard;
 
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
@@ -78,44 +76,34 @@ async function handleEvent(event: ControlEvent, screenSize: { width: number; hei
   } catch {}
 }
 
-// Captura pantalla en loop y alimenta el RTCVideoSource
-async function startScreenCapture(videoSource: any, screenSize: { width: number; height: number }) {
+async function startScreenCapture(videoSource: any, W: number, H: number) {
+  const screenshot = require("screenshot-desktop");
+  const Jimp = require("jimp");
   const FPS = 15;
-  const interval = 1000 / FPS;
 
   const capture = async () => {
+    const start = Date.now();
     try {
-      const imgBuffer = await screenshot({ format: "png" });
-      // Convertir PNG a raw RGBA para wrtc
-      const { createCanvas, loadImage } = await import("canvas").catch(() => ({ createCanvas: null, loadImage: null }));
-      if (!createCanvas || !loadImage) {
-        // Fallback: sin canvas, usar jimp
-        const Jimp = (await import("jimp").catch(() => null))?.default;
-        if (!Jimp) return;
-        const img = await Jimp.read(imgBuffer);
-        img.resize(1280, 720);
-        const w = img.getWidth();
-        const h = img.getHeight();
-        const data = new Uint8ClampedArray(w * h * 4);
-        let i = 0;
-        img.scan(0, 0, w, h, (_x: number, _y: number, idx: number) => {
+      const buf: Buffer = await screenshot({ format: "png" });
+      const img = await Jimp.Jimp.read(buf);
+      img.resize({ w: W, h: H });
+      const data = new Uint8ClampedArray(W * H * 4);
+      let i = 0;
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          const idx = (y * W + x) * 4;
           data[i++] = img.bitmap.data[idx];
           data[i++] = img.bitmap.data[idx + 1];
           data[i++] = img.bitmap.data[idx + 2];
           data[i++] = 255;
-        });
-        videoSource.onFrame({ width: w, height: h, data });
-      } else {
-        const img = await loadImage(imgBuffer);
-        const W = 1280, H = 720;
-        const canvas = createCanvas(W, H);
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img as any, 0, 0, W, H);
-        const frame = ctx.getImageData(0, 0, W, H);
-        videoSource.onFrame({ width: W, height: H, data: frame.data });
+        }
       }
-    } catch {}
-    setTimeout(capture, interval);
+      videoSource.onFrame({ width: W, height: H, data });
+    } catch (e) {
+      // silenciar errores de captura
+    }
+    const elapsed = Date.now() - start;
+    setTimeout(capture, Math.max(0, 1000 / FPS - elapsed));
   };
 
   capture();
@@ -124,9 +112,9 @@ async function startScreenCapture(videoSource: any, screenSize: { width: number;
 async function main() {
   console.log(`\n Core Agent v0.2.0 — sesión: ${SESSION_CODE}`);
   const screenSize = await getScreenSize();
-  console.log(`Pantalla: ${screenSize.width}x${screenSize.height}`);
+  const W = 1280, H = Math.round(1280 * screenSize.height / screenSize.width);
+  console.log(`Pantalla: ${screenSize.width}x${screenSize.height} → stream ${W}x${H}`);
 
-  // Signaling via Supabase
   const signalingCh = supabase.channel(`signaling:${SESSION_CODE}`);
   const controlCh = supabase.channel(`control:${SESSION_CODE}`, {
     config: { presence: { key: "agent" } }
@@ -136,39 +124,31 @@ async function main() {
 
   signalingCh
     .on("broadcast", { event: "signal" }, async ({ payload }: any) => {
-      if (payload.from === "agent") return; // ignorar los propios
+      if (payload.from === "agent") return;
 
       if (payload.type === "ready") {
         console.log("Viewer conectado, iniciando WebRTC...");
 
-        // Crear peer connection
         pc = new RTCPeerConnection(ICE_SERVERS);
-
-        // Video source — pantalla
         const videoSource = new RTCVideoSource();
         const videoTrack = videoSource.createTrack();
         pc.addTrack(videoTrack);
 
-        // Iniciar captura
-        startScreenCapture(videoSource, screenSize);
+        startScreenCapture(videoSource, W, H);
 
-        // ICE candidates
         pc.onicecandidate = async ({ candidate }: any) => {
           if (candidate) {
             await signalingCh.send({
-              type: "broadcast",
-              event: "signal",
+              type: "broadcast", event: "signal",
               payload: { type: "candidate", payload: candidate.toJSON(), from: "agent" }
             });
           }
         };
 
-        // Crear offer
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         await signalingCh.send({
-          type: "broadcast",
-          event: "signal",
+          type: "broadcast", event: "signal",
           payload: { type: "offer", payload: offer, from: "agent" }
         });
       }
@@ -181,13 +161,11 @@ async function main() {
         try { await pc.addIceCandidate(new RTCIceCandidate(payload.payload)); } catch {}
       }
     })
-    .subscribe(async (status: string) => {
-      if (status === "SUBSCRIBED") {
+    .subscribe((status: string) => {
+      if (status === "SUBSCRIBED")
         console.log("Signaling listo, esperando viewer...");
-      }
     });
 
-  // Control remoto
   controlCh
     .on("broadcast", { event: "control" }, ({ payload }: any) => {
       handleEvent(payload as ControlEvent, screenSize);

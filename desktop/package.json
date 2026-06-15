@@ -1,0 +1,31 @@
+{
+  "name": "core-desktop",
+  "version": "0.1.0",
+  "description": "Core Browser Share — app de escritorio",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "dev": "electron . --dev"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
+    "@nut-tree-fork/nut-js": "^4.2.2",
+    "@roamhq/wrtc": "^0.10.0",
+    "screenshot-desktop": "^1.15.4",
+    "jimp": "^1.6.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.core.desktop",
+    "productName": "Core",
+    "directories": { "output": "release" },
+    "win": { "target": "nsis", "icon": "assets/icon.ico" },
+    "mac": { "target": "dmg", "icon": "assets/icon.icns" },
+    "files": ["src/**/*", "assets/**/*", "node_modules/**/*"]
+  }
+}

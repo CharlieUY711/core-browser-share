@@ -1,70 +1,71 @@
 "use client";
-import React from "react";
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { startRemoteControlListener } from "@/lib/remote-control";
 
 interface HostProps {
   sessionCode: string;
   onExit?: () => void;
 }
 
-type ControlStatus = "idle" | "active";
+type ControlStatus = "idle" | "starting" | "active" | "viewer-connected";
+
+declare global {
+  interface Window {
+    coreAgent?: {
+      start: (sessionCode: string) => Promise<{ ok: boolean; error?: string }>;
+      stop: () => Promise<{ ok: boolean }>;
+      status: () => Promise<{ running: boolean }>;
+      onReady: (cb: () => void) => void;
+      onViewerConnected: (cb: () => void) => void;
+      onStopped: (cb: () => void) => void;
+    };
+  }
+}
 
 export function Host({ sessionCode, onExit }: HostProps) {
-  const [url, setUrl] = useState("https://www.google.com");
-  const [inputUrl, setInputUrl] = useState("https://www.google.com");
   const [controlStatus, setControlStatus] = useState<ControlStatus>("idle");
   const [copied, setCopied] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const stopControlRef = useRef<(() => void) | null>(null);
+  const [isElectron] = useState(() => typeof window !== "undefined" && !!window.coreAgent);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // Sincronizar URL actual con viewers via Supabase
   useEffect(() => {
-    const ch = supabase.channel(`session:${sessionCode}`, {
-      config: { presence: { key: "host" } }
-    });
+    if (!isElectron) return;
+    window.coreAgent!.onReady(() => setControlStatus("active"));
+    window.coreAgent!.onViewerConnected(() => setControlStatus("viewer-connected"));
+    window.coreAgent!.onStopped(() => setControlStatus("idle"));
+  }, [isElectron]);
+
+  // Para uso sin Electron: signaling manual (fallback)
+  useEffect(() => {
+    if (isElectron) return;
+    const ch = supabase.channel(`control:${sessionCode}`);
     channelRef.current = ch;
-    ch.subscribe(async (status) => {
-      if (status === "SUBSCRIBED") {
-        await ch.track({ role: "host", url, joined_at: new Date().toISOString() });
-      }
-    });
+    ch.subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [sessionCode]);
+  }, [sessionCode, isElectron]);
 
-  // Cuando cambia la URL, notificar a viewers
-  const navigateTo = (rawUrl: string) => {
-    let finalUrl = rawUrl.trim();
-    if (!finalUrl.startsWith("http")) finalUrl = "https://" + finalUrl;
-    setUrl(finalUrl);
-    setInputUrl(finalUrl);
-    // Broadcast URL change
-    channelRef.current?.send({
-      type: "broadcast",
-      event: "url:change",
-      payload: { url: finalUrl },
-    });
-    // Actualizar presencia con nueva URL
-    channelRef.current?.track({ role: "host", url: finalUrl, joined_at: new Date().toISOString() });
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") navigateTo(inputUrl);
-  };
-
-  const handleToggleControl = () => {
-    if (controlStatus === "idle") {
-      // Escuchar eventos del viewer y ejecutarlos en el iframe
-      const stop = startRemoteControlListenerInIframe(sessionCode, iframeRef);
-      stopControlRef.current = stop;
-      setControlStatus("active");
+  const handleToggleControl = async () => {
+    if (isElectron) {
+      if (controlStatus === "idle") {
+        setControlStatus("starting");
+        const res = await window.coreAgent!.start(sessionCode);
+        if (!res.ok) {
+          setControlStatus("idle");
+          alert("Error iniciando agente: " + res.error);
+        }
+      } else {
+        await window.coreAgent!.stop();
+        setControlStatus("idle");
+      }
     } else {
-      stopControlRef.current?.();
-      stopControlRef.current = null;
-      setControlStatus("idle");
+      // Fallback browser: solo enviar señal de toggle
+      channelRef.current?.send({
+        type: "broadcast",
+        event: "control:toggle",
+        payload: { enabled: controlStatus === "idle", session_code: sessionCode },
+      });
+      setControlStatus(controlStatus === "idle" ? "active" : "idle");
     }
   };
 
@@ -74,54 +75,40 @@ export function Host({ sessionCode, onExit }: HostProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const statusLabel = {
+    idle: "Permitir Control",
+    starting: "Iniciando...",
+    active: "Agente listo — esperando viewer",
+    "viewer-connected": "Viewer conectado ✓",
+  }[controlStatus];
+
+  const statusColor = {
+    idle: "bg-white/10 text-core-text-muted hover:bg-white/20 hover:text-white",
+    starting: "bg-yellow-500/20 text-yellow-300 cursor-wait",
+    active: "bg-core-accent/80 text-white",
+    "viewer-connected": "bg-green-500/80 text-white",
+  }[controlStatus];
+
   return (
     <div className="flex flex-col w-full rounded-xl overflow-hidden border border-core-border bg-[#1e1e2e]"
       style={{ height: "calc(100vh - 120px)" }}>
 
       {/* Barra del browser */}
       <div className="flex items-center gap-2 px-3 py-2 bg-[#181825] border-b border-core-border shrink-0">
-        {/* Dots */}
         <div className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-full bg-red-500/80" />
           <span className="h-3 w-3 rounded-full bg-yellow-500/80" />
           <span className="h-3 w-3 rounded-full bg-green-500/80" />
         </div>
 
-        {/* Nav buttons */}
-        <div className="flex items-center gap-1 ml-1">
-          <button onClick={() => iframeRef.current?.contentWindow?.history.back()}
-            className="p-1 rounded hover:bg-white/10 text-core-text-muted">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <button onClick={() => iframeRef.current?.contentWindow?.history.forward()}
-            className="p-1 rounded hover:bg-white/10 text-core-text-muted">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-          <button onClick={() => navigateTo(url)}
-            className="p-1 rounded hover:bg-white/10 text-core-text-muted">
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </button>
-        </div>
-
-        {/* URL bar */}
+        {/* Sesión info */}
         <div className="flex-1 flex items-center gap-2 bg-[#11111b] rounded-md px-3 py-1 mx-1">
           <svg className="h-3 w-3 text-green-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
           </svg>
-          <input
-            value={inputUrl}
-            onChange={e => setInputUrl(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={e => e.target.select()}
-            className="flex-1 bg-transparent text-xs text-core-text font-mono outline-none"
-            spellCheck={false}
-          />
+          <span className="text-xs text-core-text-muted font-mono">
+            Sesión activa — compartiendo pantalla
+          </span>
         </div>
 
         {/* Código + controles */}
@@ -134,107 +121,95 @@ export function Host({ sessionCode, onExit }: HostProps) {
           </button>
           <button
             onClick={handleToggleControl}
-            className={`flex items-center gap-1.5 text-xs py-1 px-3 rounded-lg font-medium transition-all ${
-              controlStatus === "active"
-                ? "bg-core-accent text-white"
-                : "bg-white/10 text-core-text-muted hover:bg-white/20 hover:text-white"
-            }`}
+            disabled={controlStatus === "starting"}
+            className={`flex items-center gap-1.5 text-xs py-1 px-3 rounded-lg font-medium transition-all disabled:cursor-wait ${statusColor}`}
           >
-            <span className={`h-1.5 w-1.5 rounded-full ${controlStatus === "active" ? "bg-white animate-pulse" : "bg-core-text-muted"}`} />
-            {controlStatus === "active" ? "Revocar Control" : "Permitir Control"}
+            <span className={`h-1.5 w-1.5 rounded-full ${
+              controlStatus === "idle" ? "bg-core-text-muted" :
+              controlStatus === "starting" ? "bg-yellow-400 animate-pulse" :
+              controlStatus === "viewer-connected" ? "bg-white animate-pulse" :
+              "bg-white animate-pulse"
+            }`} />
+            {statusLabel}
           </button>
+          {onExit && (
+            <button onClick={onExit} className="btn-ghost text-xs py-1 px-2 text-red-400 hover:text-red-300">
+              Salir
+            </button>
+          )}
         </div>
       </div>
 
-      {/* iframe — el sitio real */}
-      <iframe
-        ref={iframeRef}
-        src={url}
-        className="flex-1 w-full border-0"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-        allow="autoplay; fullscreen"
-        onLoad={() => {
-          try {
-            const iframeUrl = iframeRef.current?.contentWindow?.location.href;
-            if (iframeUrl && iframeUrl !== "about:blank") setInputUrl(iframeUrl);
-          } catch {}
-        }}
-      />
+      {/* Vista de estado — instrucciones */}
+      <div className="flex-1 flex flex-col items-center justify-center gap-6 p-8">
+        {/* Código grande */}
+        <div className="flex flex-col items-center gap-2">
+          <p className="text-xs text-core-text-muted uppercase tracking-widest">Tu código de sesión</p>
+          <div className="flex gap-2">
+            {sessionCode.split("").map((d, i) => (
+              <span key={i} className="flex h-14 w-10 items-center justify-center rounded-lg bg-[#181825] border border-core-border font-mono text-2xl font-bold text-core-accent">
+                {d}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* Estado del agente */}
+        <div className="flex flex-col items-center gap-3 max-w-sm text-center">
+          {controlStatus === "idle" && (
+            <>
+              <div className="h-12 w-12 rounded-full bg-white/5 border border-core-border flex items-center justify-center">
+                <svg className="h-6 w-6 text-core-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 17.25v1.007a3 3 0 01-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0115 18.257V17.25m6-12V15a2.25 2.25 0 01-2.25 2.25H5.25A2.25 2.25 0 013 15V5.25m18 0A2.25 2.25 0 0018.75 3H5.25A2.25 2.25 0 003 5.25m18 0H3" />
+                </svg>
+              </div>
+              <p className="text-sm text-core-text-muted">
+                {isElectron
+                  ? 'Hacé click en "Permitir Control" para que el viewer pueda ver y controlar tu pantalla.'
+                  : 'Corriendo en modo browser. Para control completo, usá la app de escritorio.'}
+              </p>
+            </>
+          )}
+          {controlStatus === "starting" && (
+            <>
+              <div className="h-6 w-6 animate-spin rounded-full border-2 border-core-muted border-t-core-accent" />
+              <p className="text-sm text-core-text-muted">Iniciando agente de pantalla...</p>
+            </>
+          )}
+          {(controlStatus === "active" || controlStatus === "viewer-connected") && (
+            <>
+              <div className={`h-12 w-12 rounded-full flex items-center justify-center ${
+                controlStatus === "viewer-connected" ? "bg-green-500/20 border border-green-500/40" : "bg-core-accent/20 border border-core-accent/40"
+              }`}>
+                {controlStatus === "viewer-connected" ? (
+                  <svg className="h-6 w-6 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                ) : (
+                  <svg className="h-6 w-6 text-core-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.288 15.038a5.25 5.25 0 017.424 0M5.106 11.856c3.807-3.808 9.98-3.808 13.788 0M1.924 8.674c5.565-5.565 14.587-5.565 20.152 0M12.53 18.22l-.53.53-.53-.53a.75.75 0 011.06 0z" />
+                  </svg>
+                )}
+              </div>
+              <p className="text-sm text-core-text-muted">
+                {controlStatus === "viewer-connected"
+                  ? "Viewer conectado. Está viendo tu pantalla en tiempo real."
+                  : "Agente activo. Compartí el código con quien quiera ver tu pantalla."}
+              </p>
+            </>
+          )}
+        </div>
+
+        {/* Instrucción viewer */}
+        {(controlStatus === "active" || controlStatus === "viewer-connected") && (
+          <div className="flex items-center gap-3 rounded-xl bg-[#181825] border border-core-border px-4 py-3 text-xs text-core-text-muted max-w-sm">
+            <svg className="h-4 w-4 shrink-0 text-core-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+            </svg>
+            El viewer debe ir a <span className="text-core-accent font-mono mx-1">compartir.core.com.uy</span> e ingresar el código <span className="text-core-accent font-mono ml-1">{sessionCode}</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
-
-// Control remoto ejecutado dentro del iframe del host
-function startRemoteControlListenerInIframe(
-  sessionCode: string,
-  iframeRef: React.MutableRefObject<HTMLIFrameElement | null>
-) {
-  const { supabase } = require("@/lib/supabase");
-  const channel = supabase.channel(`control:${sessionCode}`);
-
-  channel.on("broadcast", { event: "control" }, ({ payload }: any) => {
-    const iframe = iframeRef.current;
-    if (!iframe?.contentWindow) return;
-    const doc = iframe.contentDocument;
-    if (!doc) return;
-
-    const x = (payload.x ?? 0) * iframe.clientWidth;
-    const y = (payload.y ?? 0) * iframe.clientHeight;
-
-    const fire = (type: string, extra?: object) => {
-      const el = doc.elementFromPoint(x, y) ?? doc.body;
-      el.dispatchEvent(new MouseEvent(type, {
-        bubbles: true, cancelable: true,
-        clientX: x, clientY: y,
-        ...extra,
-      }));
-    };
-
-    switch (payload.type) {
-      case "mousemove": fire("mousemove"); break;
-      case "mousedown":
-        fire("mousedown");
-        (doc.elementFromPoint(x, y) as HTMLElement)?.focus?.();
-        break;
-      case "mouseup":
-        fire("mouseup");
-        fire("click");
-        break;
-      case "scroll": {
-        const el = doc.elementFromPoint(x, y) ?? doc.documentElement;
-        el.scrollBy({ top: payload.delta ?? 0, behavior: "instant" as ScrollBehavior });
-        break;
-      }
-      case "keydown": {
-        const el = doc.activeElement ?? doc.body;
-        if (payload.key === "Backspace") {
-          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-            const start = el.selectionStart ?? el.value.length;
-            if (start > 0) {
-              el.value = el.value.slice(0, start - 1) + el.value.slice(start);
-              el.selectionStart = el.selectionEnd = start - 1;
-              el.dispatchEvent(new Event("input", { bubbles: true }));
-            }
-          }
-        } else if (payload.key?.length === 1) {
-          if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-            const start = el.selectionStart ?? el.value.length;
-            el.value = el.value.slice(0, start) + payload.key + el.value.slice(start);
-            el.selectionStart = el.selectionEnd = start + 1;
-            el.dispatchEvent(new Event("input", { bubbles: true }));
-          }
-        }
-        el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: payload.key }));
-        break;
-      }
-    }
-  });
-
-  channel.subscribe();
-  return () => supabase.removeChannel(channel);
-}
-
-
-
-
-

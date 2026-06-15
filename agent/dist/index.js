@@ -1,49 +1,11 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 require("dotenv/config");
 const supabase_js_1 = require("@supabase/supabase-js");
 const nut_js_1 = require("@nut-tree-fork/nut-js");
-const screenshot_desktop_1 = __importDefault(require("screenshot-desktop"));
-// @roamhq/wrtc para WebRTC en Node
 const wrtc = require("@roamhq/wrtc");
 const { RTCPeerConnection, RTCSessionDescription, RTCIceCandidate, nonstandard } = wrtc;
-const { RTCVideoSource, RTCAudioSource } = nonstandard;
+const { RTCVideoSource } = nonstandard;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SESSION_CODE = process.argv[2] || process.env.SESSION_CODE;
@@ -116,54 +78,42 @@ async function handleEvent(event, screenSize) {
     }
     catch { }
 }
-// Captura pantalla en loop y alimenta el RTCVideoSource
-async function startScreenCapture(videoSource, screenSize) {
+async function startScreenCapture(videoSource, W, H) {
+    const screenshot = require("screenshot-desktop");
+    const Jimp = require("jimp");
     const FPS = 15;
-    const interval = 1000 / FPS;
     const capture = async () => {
+        const start = Date.now();
         try {
-            const imgBuffer = await (0, screenshot_desktop_1.default)({ format: "png" });
-            // Convertir PNG a raw RGBA para wrtc
-            const { createCanvas, loadImage } = await Promise.resolve().then(() => __importStar(require("canvas"))).catch(() => ({ createCanvas: null, loadImage: null }));
-            if (!createCanvas || !loadImage) {
-                // Fallback: sin canvas, usar jimp
-                const Jimp = (await Promise.resolve().then(() => __importStar(require("jimp"))).catch(() => null))?.default;
-                if (!Jimp)
-                    return;
-                const img = await Jimp.read(imgBuffer);
-                img.resize(1280, 720);
-                const w = img.getWidth();
-                const h = img.getHeight();
-                const data = new Uint8ClampedArray(w * h * 4);
-                let i = 0;
-                img.scan(0, 0, w, h, (_x, _y, idx) => {
+            const buf = await screenshot({ format: "png" });
+            const img = await Jimp.Jimp.read(buf);
+            img.resize({ w: W, h: H });
+            const data = new Uint8ClampedArray(W * H * 4);
+            let i = 0;
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const idx = (y * W + x) * 4;
                     data[i++] = img.bitmap.data[idx];
                     data[i++] = img.bitmap.data[idx + 1];
                     data[i++] = img.bitmap.data[idx + 2];
                     data[i++] = 255;
-                });
-                videoSource.onFrame({ width: w, height: h, data });
+                }
             }
-            else {
-                const img = await loadImage(imgBuffer);
-                const W = 1280, H = 720;
-                const canvas = createCanvas(W, H);
-                const ctx = canvas.getContext("2d");
-                ctx.drawImage(img, 0, 0, W, H);
-                const frame = ctx.getImageData(0, 0, W, H);
-                videoSource.onFrame({ width: W, height: H, data: frame.data });
-            }
+            videoSource.onFrame({ width: W, height: H, data });
         }
-        catch { }
-        setTimeout(capture, interval);
+        catch (e) {
+            // silenciar errores de captura
+        }
+        const elapsed = Date.now() - start;
+        setTimeout(capture, Math.max(0, 1000 / FPS - elapsed));
     };
     capture();
 }
 async function main() {
     console.log(`\n Core Agent v0.2.0 — sesión: ${SESSION_CODE}`);
     const screenSize = await getScreenSize();
-    console.log(`Pantalla: ${screenSize.width}x${screenSize.height}`);
-    // Signaling via Supabase
+    const W = 1280, H = Math.round(1280 * screenSize.height / screenSize.width);
+    console.log(`Pantalla: ${screenSize.width}x${screenSize.height} → stream ${W}x${H}`);
     const signalingCh = supabase.channel(`signaling:${SESSION_CODE}`);
     const controlCh = supabase.channel(`control:${SESSION_CODE}`, {
         config: { presence: { key: "agent" } }
@@ -172,33 +122,26 @@ async function main() {
     signalingCh
         .on("broadcast", { event: "signal" }, async ({ payload }) => {
         if (payload.from === "agent")
-            return; // ignorar los propios
+            return;
         if (payload.type === "ready") {
             console.log("Viewer conectado, iniciando WebRTC...");
-            // Crear peer connection
             pc = new RTCPeerConnection(ICE_SERVERS);
-            // Video source — pantalla
             const videoSource = new RTCVideoSource();
             const videoTrack = videoSource.createTrack();
             pc.addTrack(videoTrack);
-            // Iniciar captura
-            startScreenCapture(videoSource, screenSize);
-            // ICE candidates
+            startScreenCapture(videoSource, W, H);
             pc.onicecandidate = async ({ candidate }) => {
                 if (candidate) {
                     await signalingCh.send({
-                        type: "broadcast",
-                        event: "signal",
+                        type: "broadcast", event: "signal",
                         payload: { type: "candidate", payload: candidate.toJSON(), from: "agent" }
                     });
                 }
             };
-            // Crear offer
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             await signalingCh.send({
-                type: "broadcast",
-                event: "signal",
+                type: "broadcast", event: "signal",
                 payload: { type: "offer", payload: offer, from: "agent" }
             });
         }
@@ -212,12 +155,10 @@ async function main() {
             catch { }
         }
     })
-        .subscribe(async (status) => {
-        if (status === "SUBSCRIBED") {
+        .subscribe((status) => {
+        if (status === "SUBSCRIBED")
             console.log("Signaling listo, esperando viewer...");
-        }
     });
-    // Control remoto
     controlCh
         .on("broadcast", { event: "control" }, ({ payload }) => {
         handleEvent(payload, screenSize);

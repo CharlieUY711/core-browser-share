@@ -41,11 +41,14 @@ export function Host({ sessionCode, onExit }: HostProps) {
     if (!finalUrl.startsWith("http")) finalUrl = "https://" + finalUrl;
     setUrl(finalUrl);
     setInputUrl(finalUrl);
+    // Broadcast URL change
     channelRef.current?.send({
       type: "broadcast",
       event: "url:change",
       payload: { url: finalUrl },
     });
+    // Actualizar presencia con nueva URL
+    channelRef.current?.track({ role: "host", url: finalUrl, joined_at: new Date().toISOString() });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -230,6 +233,7 @@ function startRemoteControlListenerInIframe(
   channel.subscribe();
   return () => supabase.removeChannel(channel);
 }
+
 
 
 

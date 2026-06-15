@@ -13,32 +13,39 @@ export function Viewer({ sessionCode }: ViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
-  // Recibir URL del host en tiempo real
   useEffect(() => {
-    const ch = supabase.channel(`control:${sessionCode}`);
+    // Un solo canal para todo: control + url:change + presencia
+    const ch = supabase.channel(`session:${sessionCode}`, {
+      config: { presence: { key: "viewer" } }
+    });
     channelRef.current = ch;
 
-    // Escuchar cambios de URL del host
-    const sessionCh = supabase.channel(`session:${sessionCode}`);
-    sessionCh.on("presence", { event: "sync" }, () => {
-      const state = sessionCh.presenceState() as any;
-      const host = Object.values(state).flat().find((p: any) => p.role === "host") as any;
+    ch.on("presence", { event: "sync" }, () => {
+      const state = ch.presenceState() as any;
+      const entries = Object.values(state).flat() as any[];
+      const host = entries.find((p: any) => p.role === "host");
       if (host?.url) setUrl(host.url);
     });
-    sessionCh.on("broadcast", { event: "url:change" }, ({ payload }) => {
+
+    ch.on("broadcast", { event: "url:change" }, ({ payload }) => {
       if (payload?.url) setUrl(payload.url);
     });
-    sessionCh.subscribe(async (status) => {
+
+    ch.subscribe(async (status) => {
       if (status === "SUBSCRIBED") {
-        await sessionCh.track({ role: "viewer", joined_at: new Date().toISOString() });
+        await ch.track({ role: "viewer", joined_at: new Date().toISOString() });
       }
     });
 
-    ch.subscribe();
+    // Canal separado solo para eventos de control
+    const controlCh = supabase.channel(`control:${sessionCode}`);
+    controlCh.subscribe();
+    // Guardar referencia al canal de control para enviar eventos
+    const originalRef = channelRef;
 
     return () => {
       supabase.removeChannel(ch);
-      supabase.removeChannel(sessionCh);
+      supabase.removeChannel(controlCh);
     };
   }, [sessionCode]);
 
@@ -49,7 +56,8 @@ export function Viewer({ sessionCode }: ViewerProps) {
   }, []);
 
   const sendEvent = (event: Omit<ControlEvent, "session_code">) => {
-    channelRef.current?.send({
+    // Enviar al canal control:
+    supabase.channel(`control:${sessionCode}`).send({
       type: "broadcast",
       event: "control",
       payload: { ...event, session_code: sessionCode } satisfies ControlEvent,
@@ -159,7 +167,6 @@ export function Viewer({ sessionCode }: ViewerProps) {
         </div>
       </div>
 
-      {/* Overlay de eventos — captura clicks y los manda al host */}
       <div
         className={`flex-1 relative overflow-hidden ${controlEnabled ? "cursor-crosshair" : "cursor-default"}`}
         onMouseMove={handleMouseMove}
@@ -168,16 +175,12 @@ export function Viewer({ sessionCode }: ViewerProps) {
         onWheel={handleWheel}
         onContextMenu={(e) => controlEnabled && e.preventDefault()}
       >
-        {/* iframe del mismo sitio — espejo visual */}
         <iframe
           src={url}
           className="w-full h-full border-0 pointer-events-none"
           sandbox="allow-scripts allow-same-origin allow-forms"
         />
-        {/* Overlay transparente que captura los eventos cuando control activo */}
-        {controlEnabled && (
-          <div className="absolute inset-0 bg-transparent" />
-        )}
+        {controlEnabled && <div className="absolute inset-0 bg-transparent" />}
         {controlEnabled && (
           <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full bg-core-accent/90 px-3 py-1 text-xs font-medium text-white backdrop-blur-sm pointer-events-none">
             <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />

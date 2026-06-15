@@ -41,56 +41,32 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SESSION_CODE = process.argv[2] || process.env.SESSION_CODE;
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !SESSION_CODE) {
     console.error("Uso: core-agent <SESSION_CODE>");
-    console.error("Variables requeridas: SUPABASE_URL, SUPABASE_ANON_KEY");
     process.exit(1);
 }
 const supabase = (0, supabase_js_1.createClient)(SUPABASE_URL, SUPABASE_ANON_KEY);
-// Configurar velocidad del mouse
 nut_js_1.mouse.config.mouseSpeed = 2000;
 async function getScreenSize() {
     const { screen } = await Promise.resolve().then(() => __importStar(require("@nut-tree-fork/nut-js")));
-    const width = await screen.width();
-    const height = await screen.height();
-    return { width, height };
+    return { width: await screen.width(), height: await screen.height() };
 }
 const KEY_MAP = {
-    Enter: nut_js_1.Key.Return,
-    Backspace: nut_js_1.Key.Backspace,
-    Delete: nut_js_1.Key.Delete,
-    Escape: nut_js_1.Key.Escape,
-    Tab: nut_js_1.Key.Tab,
-    ArrowUp: nut_js_1.Key.Up,
-    ArrowDown: nut_js_1.Key.Down,
-    ArrowLeft: nut_js_1.Key.Left,
-    ArrowRight: nut_js_1.Key.Right,
-    Control: nut_js_1.Key.LeftControl,
-    Shift: nut_js_1.Key.LeftShift,
-    Alt: nut_js_1.Key.LeftAlt,
-    Meta: nut_js_1.Key.LeftSuper,
-    " ": nut_js_1.Key.Space,
+    Enter: nut_js_1.Key.Return, Backspace: nut_js_1.Key.Backspace, Delete: nut_js_1.Key.Delete,
+    Escape: nut_js_1.Key.Escape, Tab: nut_js_1.Key.Tab, ArrowUp: nut_js_1.Key.Up, ArrowDown: nut_js_1.Key.Down,
+    ArrowLeft: nut_js_1.Key.Left, ArrowRight: nut_js_1.Key.Right, Control: nut_js_1.Key.LeftControl,
+    Shift: nut_js_1.Key.LeftShift, Alt: nut_js_1.Key.LeftAlt, Meta: nut_js_1.Key.LeftSuper, " ": nut_js_1.Key.Space,
 };
 async function handleEvent(event, screen) {
     try {
         switch (event.type) {
             case "mousemove":
-                if (event.x !== undefined && event.y !== undefined) {
-                    await nut_js_1.mouse.move([
-                        new nut_js_1.Point(Math.round(event.x * screen.width), Math.round(event.y * screen.height)),
-                    ]);
-                }
+                if (event.x !== undefined && event.y !== undefined)
+                    await nut_js_1.mouse.move([new nut_js_1.Point(Math.round(event.x * screen.width), Math.round(event.y * screen.height))]);
                 break;
             case "mousedown":
             case "mouseup": {
-                const btn = event.button === "right"
-                    ? nut_js_1.Button.RIGHT
-                    : event.button === "middle"
-                        ? nut_js_1.Button.MIDDLE
-                        : nut_js_1.Button.LEFT;
-                if (event.x !== undefined && event.y !== undefined) {
-                    await nut_js_1.mouse.move([
-                        new nut_js_1.Point(Math.round(event.x * screen.width), Math.round(event.y * screen.height)),
-                    ]);
-                }
+                const btn = event.button === "right" ? nut_js_1.Button.RIGHT : event.button === "middle" ? nut_js_1.Button.MIDDLE : nut_js_1.Button.LEFT;
+                if (event.x !== undefined && event.y !== undefined)
+                    await nut_js_1.mouse.move([new nut_js_1.Point(Math.round(event.x * screen.width), Math.round(event.y * screen.height))]);
                 if (event.type === "mousedown")
                     await nut_js_1.mouse.pressButton(btn);
                 else
@@ -108,49 +84,46 @@ async function handleEvent(event, screen) {
             case "keydown": {
                 if (!event.key)
                     break;
-                const mappedKey = KEY_MAP[event.key];
-                if (mappedKey) {
-                    await nut_js_1.keyboard.pressKey(mappedKey);
-                }
-                else if (event.key.length === 1) {
+                const k = KEY_MAP[event.key];
+                if (k)
+                    await nut_js_1.keyboard.pressKey(k);
+                else if (event.key.length === 1)
                     await nut_js_1.keyboard.type(event.key);
-                }
                 break;
             }
             case "keyup": {
                 if (!event.key)
                     break;
-                const mappedKey = KEY_MAP[event.key];
-                if (mappedKey)
-                    await nut_js_1.keyboard.releaseKey(mappedKey);
+                const k = KEY_MAP[event.key];
+                if (k)
+                    await nut_js_1.keyboard.releaseKey(k);
                 break;
             }
         }
     }
-    catch (err) {
-        // Ignorar errores de eventos individuales
-    }
+    catch { }
 }
 async function main() {
-    console.log(`\n Core Agent v0.1.0`);
-    console.log(`Sesión: ${SESSION_CODE}`);
-    console.log(`Conectando a Supabase...\n`);
+    console.log(`\n Core Agent v0.1.0 — sesión: ${SESSION_CODE}`);
     const screen = await getScreenSize();
-    console.log(`Pantalla detectada: ${screen.width}x${screen.height}`);
-    const channel = supabase.channel(`control:${SESSION_CODE}`);
+    console.log(`Pantalla: ${screen.width}x${screen.height}`);
+    const channel = supabase.channel(`control:${SESSION_CODE}`, {
+        config: { presence: { key: "agent" } }
+    });
     channel
         .on("broadcast", { event: "control" }, ({ payload }) => {
         handleEvent(payload, screen);
     })
-        .subscribe((status) => {
+        .subscribe(async (status) => {
         if (status === "SUBSCRIBED") {
-            console.log(`Escuchando eventos de control...`);
-            console.log(`El viewer puede tomar control ahora.\n`);
+            // Anunciar presencia del agent
+            await channel.track({ online_at: new Date().toISOString(), screen });
+            console.log(`Agent online. El viewer puede tomar control ahora.\n`);
             console.log(`Ctrl+C para detener.\n`);
         }
     });
     process.on("SIGINT", async () => {
-        console.log("\nDeteniendo Core Agent...");
+        await channel.untrack();
         await supabase.removeChannel(channel);
         process.exit(0);
     });
